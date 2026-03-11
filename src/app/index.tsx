@@ -1,98 +1,204 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useEffect } from 'react'
+import {
+  Pressable,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native'
+import { SafeAreaView } from 'react-native-safe-area-context'
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { colors, radius, spacing } from '@/constants/theme'
+import { useSession } from '@/hooks/useSession'
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
-  }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
-  return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
+const DURATIONS = [15, 25, 45] as const
+
+function formatTime(seconds: number) {
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
 export default function HomeScreen() {
-  return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
+  const {
+    task,
+    setTask,
+    duration,
+    setDuration,
+    isActive,
+    isCompleted,
+    timeLeft,
+    startSession,
+    stopSession,
+    clearCompleted,
+  } = useSession()
 
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
+  useEffect(() => {
+    if (!isCompleted) return
+    const timeout = setTimeout(clearCompleted, 3000)
+    return () => clearTimeout(timeout)
+  }, [isCompleted])
 
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
-          />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
-
-        {Platform.OS === 'web' && <WebBadge />}
+  if (isCompleted) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.centeredContent}>
+          <Text style={styles.completedText}>✅ Session terminée !</Text>
+        </View>
       </SafeAreaView>
-    </ThemedView>
-  );
+    )
+  }
+
+  if (isActive) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" />
+        <View style={styles.centeredContent}>
+          <Text style={styles.taskLabel}>{task || 'Focus session'}</Text>
+          <Text style={styles.countdown}>{formatTime(timeLeft)}</Text>
+          <Pressable style={styles.stopButton} onPress={stopSession}>
+            <Text style={styles.buttonText}>Arrêter la session</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    )
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="light-content" />
+      <View style={styles.content}>
+        <Text style={styles.title}>⏱️ Focus Session</Text>
+
+        <TextInput
+          style={styles.input}
+          placeholder="Quelle est ta tâche ?"
+          placeholderTextColor={colors.textSecondary}
+          value={task}
+          onChangeText={setTask}
+        />
+
+        <View style={styles.durationRow}>
+          {DURATIONS.map((d) => (
+            <Pressable
+              key={d}
+              style={[
+                styles.durationPill,
+                duration === d && styles.durationPillActive,
+              ]}
+              onPress={() => setDuration(d)}
+            >
+              <Text
+                style={[
+                  styles.durationText,
+                  duration === d && styles.durationTextActive,
+                ]}
+              >
+                {d} min
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+
+        <Pressable style={styles.startButton} onPress={startSession}>
+          <Text style={styles.buttonText}>Démarrer la session</Text>
+        </Pressable>
+      </View>
+    </SafeAreaView>
+  )
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    justifyContent: 'center',
-    flexDirection: 'row',
+    backgroundColor: colors.background,
   },
-  safeArea: {
+  content: {
     flex: 1,
-    paddingHorizontal: Spacing.four,
-    alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
-  },
-  heroSection: {
-    alignItems: 'center',
+    paddingHorizontal: spacing.lg,
     justifyContent: 'center',
+    gap: spacing.lg,
+  },
+  centeredContent: {
     flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
+    paddingHorizontal: spacing.lg,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: spacing.lg,
   },
   title: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: colors.text,
     textAlign: 'center',
   },
-  code: {
-    textTransform: 'uppercase',
+  input: {
+    backgroundColor: colors.surface,
+    color: colors.text,
+    fontSize: 16,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
-  stepContainer: {
-    gap: Spacing.three,
+  durationRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    justifyContent: 'center',
+  },
+  durationPill: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.full,
+    backgroundColor: colors.surface,
+  },
+  durationPillActive: {
+    backgroundColor: colors.primary,
+  },
+  durationText: {
+    color: colors.textSecondary,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  durationTextActive: {
+    color: colors.text,
+  },
+  startButton: {
+    backgroundColor: colors.primary,
+    paddingVertical: spacing.md,
+    borderRadius: radius.full,
+    alignItems: 'center',
+  },
+  stopButton: {
+    backgroundColor: colors.error,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.xl,
+    borderRadius: radius.full,
+    alignItems: 'center',
     alignSelf: 'stretch',
-    paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
+    marginHorizontal: spacing.lg,
   },
-});
+  buttonText: {
+    color: colors.text,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  taskLabel: {
+    color: colors.textSecondary,
+    fontSize: 18,
+  },
+  countdown: {
+    fontSize: 72,
+    fontWeight: '200',
+    color: colors.primary,
+    fontVariant: ['tabular-nums'],
+  },
+  completedText: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: colors.success,
+  },
+})
