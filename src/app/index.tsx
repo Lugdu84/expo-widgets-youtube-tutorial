@@ -1,204 +1,245 @@
-import { useEffect } from 'react'
+import DeliveryActivity from '@/widgets/DeliveryActivity';
+import DeliveryWidget from '@/widgets/DeliveryWidget';
+import { DeliveryProps, DeliveryStatus } from '@/widgets/types';
 import {
-  Pressable,
-  StatusBar,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native'
-import { SafeAreaView } from 'react-native-safe-area-context'
+	addUserInteractionListener,
+	LiveActivity,
+	UserInteractionEvent,
+} from 'expo-widgets';
+import { useEffect, useRef, useState } from 'react';
+import { AppState, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { colors, radius, spacing } from '@/constants/theme'
-import { useSession } from '@/hooks/useSession'
+const ORDER_NUMBER = '12345';
 
-const DURATIONS = [15, 25, 45] as const
+const INITIAL_PROPS: DeliveryProps = {
+	status: 'pending',
+	etaMinutes: 0,
+	orderNumber: ORDER_NUMBER,
+};
 
-function formatTime(seconds: number) {
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+const STEP_INTERVAL = 2_000;
+const START_ETA = 30;
+const ETA_DECREMENT = 5;
+const ARRIVING_THRESHOLD = 10;
+
+function buildSteps(): { status: DeliveryStatus; etaMinutes: number }[] {
+	const steps: { status: DeliveryStatus; etaMinutes: number }[] = [];
+	for (let eta = START_ETA; eta >= 0; eta -= ETA_DECREMENT) {
+		const status: DeliveryStatus =
+			eta === 0
+				? 'delivered'
+				: eta <= ARRIVING_THRESHOLD
+					? 'arriving'
+					: 'on_the_way';
+		steps.push({ status, etaMinutes: eta });
+	}
+	return steps;
 }
 
-export default function HomeScreen() {
-  const {
-    task,
-    setTask,
-    duration,
-    setDuration,
-    isActive,
-    isCompleted,
-    timeLeft,
-    startSession,
-    stopSession,
-    clearCompleted,
-  } = useSession()
+const STEPS = buildSteps();
 
-  useEffect(() => {
-    if (!isCompleted) return
-    const timeout = setTimeout(clearCompleted, 3000)
-    return () => clearTimeout(timeout)
-  }, [isCompleted])
+// Register listener at module level to catch events even before React mounts
+let pendingEvent: UserInteractionEvent | null = null;
+addUserInteractionListener((event) => {
+	if (event.source !== 'DeliveryWidget') return;
+	pendingEvent = event;
+	onWidgetEvent?.(event);
+});
+let onWidgetEvent: ((event: UserInteractionEvent) => void) | null = null;
 
-  if (isCompleted) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="light-content" />
-        <View style={styles.centeredContent}>
-          <Text style={styles.completedText}>✅ Session terminée !</Text>
-        </View>
-      </SafeAreaView>
-    )
-  }
+export default function Index() {
+	const [delivery, setDelivery] = useState<DeliveryProps>(INITIAL_PROPS);
+	const activityRef = useRef<LiveActivity<DeliveryProps> | null>(null);
+	const progressionRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  if (isActive) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <StatusBar barStyle="light-content" />
-        <View style={styles.centeredContent}>
-          <Text style={styles.taskLabel}>{task || 'Focus session'}</Text>
-          <Text style={styles.countdown}>{formatTime(timeLeft)}</Text>
-          <Pressable style={styles.stopButton} onPress={stopSession}>
-            <Text style={styles.buttonText}>Arrêter la session</Text>
-          </Pressable>
-        </View>
-      </SafeAreaView>
-    )
-  }
+	const clearProgression = () => {
+		if (progressionRef.current) {
+			clearInterval(progressionRef.current);
+			progressionRef.current = null;
+		}
+	};
 
-  return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" />
-      <View style={styles.content}>
-        <Text style={styles.title}>⏱️ Focus Session</Text>
+	const handleConfirmRef = useRef<() => void>(() => {});
+	const handleCancelRef = useRef<() => void>(() => {});
 
-        <TextInput
-          style={styles.input}
-          placeholder="Quelle est ta tâche ?"
-          placeholderTextColor={colors.textSecondary}
-          value={task}
-          onChangeText={setTask}
-        />
+	const dispatchEvent = (event: UserInteractionEvent) => {
+		if (event.target === 'confirm') {
+			handleConfirmRef.current();
+		} else if (event.target === 'cancel') {
+			handleCancelRef.current();
+		}
+	};
 
-        <View style={styles.durationRow}>
-          {DURATIONS.map((d) => (
-            <Pressable
-              key={d}
-              style={[
-                styles.durationPill,
-                duration === d && styles.durationPillActive,
-              ]}
-              onPress={() => setDuration(d)}
-            >
-              <Text
-                style={[
-                  styles.durationText,
-                  duration === d && styles.durationTextActive,
-                ]}
-              >
-                {d} min
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+	useEffect(() => {
+		DeliveryWidget.updateSnapshot(INITIAL_PROPS);
 
-        <Pressable style={styles.startButton} onPress={startSession}>
-          <Text style={styles.buttonText}>Démarrer la session</Text>
-        </Pressable>
-      </View>
-    </SafeAreaView>
-  )
+		// Clean up any stale live activities from previous sessions
+		const staleActivities = DeliveryActivity.getInstances();
+		if (staleActivities.length > 0) {
+			Promise.all(
+				staleActivities.map((a) => a.end('immediate').catch(() => {})),
+			);
+		}
+
+		// Wire up the module-level listener to call our refs
+		onWidgetEvent = dispatchEvent;
+
+		// Process any event that arrived before mount
+		if (pendingEvent) {
+			dispatchEvent(pendingEvent);
+			pendingEvent = null;
+		}
+
+		// Also re-check when app returns to foreground (cold-start resilience)
+		const appStateSub = AppState.addEventListener('change', (state) => {
+			if (state === 'active' && pendingEvent) {
+				dispatchEvent(pendingEvent);
+				pendingEvent = null;
+			}
+		});
+
+		return () => {
+			onWidgetEvent = null;
+			appStateSub.remove();
+			clearProgression();
+		};
+	}, []);
+
+	useEffect(() => {
+		if (activityRef.current) {
+			activityRef.current.update(delivery);
+		}
+	}, [delivery]);
+
+	const handleConfirm = () => {
+		const confirmedProps: DeliveryProps = {
+			status: 'confirmed',
+			etaMinutes: 30,
+			orderNumber: ORDER_NUMBER,
+		};
+
+		setDelivery(confirmedProps);
+
+		const now = Date.now();
+		const totalDuration = STEPS.length * STEP_INTERVAL;
+		DeliveryWidget.updateTimeline([
+			{
+				date: new Date(now),
+				props: { status: 'on_the_way', etaMinutes: START_ETA, orderNumber: ORDER_NUMBER },
+			},
+			{
+				date: new Date(now + totalDuration),
+				props: { status: 'delivered', etaMinutes: 0, orderNumber: ORDER_NUMBER },
+			},
+		]);
+
+		// End any stale live activities before starting a new one
+		const existing = DeliveryActivity.getInstances();
+		Promise.all(existing.map((a) => a.end('immediate').catch(() => {}))).then(
+			() => {
+				activityRef.current = DeliveryActivity.start({
+					status: 'on_the_way',
+					etaMinutes: 30,
+					orderNumber: ORDER_NUMBER,
+				});
+			},
+		);
+
+		let stepIndex = 0;
+		clearProgression();
+		progressionRef.current = setInterval(() => {
+			const step = STEPS[stepIndex];
+			setDelivery({ orderNumber: ORDER_NUMBER, ...step });
+
+			if (step.status === 'delivered') {
+				clearProgression();
+				// Show "Livrée" for 4 seconds before dismissing
+				activityRef.current
+					?.update({
+						status: 'delivered',
+						etaMinutes: 0,
+						orderNumber: ORDER_NUMBER,
+					})
+					.catch(() => {});
+				setTimeout(() => {
+					activityRef.current?.end('immediate').catch(() => {});
+					activityRef.current = null;
+				}, 4_000);
+			}
+
+			stepIndex++;
+			if (stepIndex >= STEPS.length) {
+				clearProgression();
+			}
+		}, STEP_INTERVAL);
+	};
+
+	const handleCancel = () => {
+		clearProgression();
+		setDelivery(INITIAL_PROPS);
+		DeliveryWidget.updateSnapshot(INITIAL_PROPS);
+		activityRef.current?.end('immediate').catch(() => {});
+		activityRef.current = null;
+	};
+
+	handleConfirmRef.current = handleConfirm;
+	handleCancelRef.current = handleCancel;
+
+	const statusLabel: Record<DeliveryStatus, string> = {
+		pending: '⏳ En attente de confirmation',
+		confirmed: '✅ Confirmée',
+		on_the_way: '🚚 En route',
+		arriving: '📦 Presque là',
+		delivered: '✅ Livrée',
+	};
+
+	return (
+		<View style={styles.container}>
+			<Text style={styles.title}>Ma Livraison</Text>
+			<Text style={styles.order}>Commande #{ORDER_NUMBER}</Text>
+			<Text style={styles.status}>{statusLabel[delivery.status]}</Text>
+
+			{delivery.status !== 'pending' && delivery.status !== 'delivered' && (
+				<Text style={styles.eta}>{delivery.etaMinutes} min</Text>
+			)}
+
+			{delivery.status === 'pending' && (
+				<Pressable
+					style={styles.button}
+					onPress={handleConfirm}>
+					<Text style={styles.buttonText}>Confirmer la livraison</Text>
+				</Pressable>
+			)}
+
+			{(delivery.status === 'on_the_way' || delivery.status === 'arriving') && (
+				<Pressable
+					style={[styles.button, styles.buttonDanger]}
+					onPress={handleCancel}>
+					<Text style={styles.buttonText}>Annuler</Text>
+				</Pressable>
+			)}
+		</View>
+	);
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  content: {
-    flex: 1,
-    paddingHorizontal: spacing.lg,
-    justifyContent: 'center',
-    gap: spacing.lg,
-  },
-  centeredContent: {
-    flex: 1,
-    paddingHorizontal: spacing.lg,
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: spacing.lg,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: colors.text,
-    textAlign: 'center',
-  },
-  input: {
-    backgroundColor: colors.surface,
-    color: colors.text,
-    fontSize: 16,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.md,
-    borderRadius: radius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  durationRow: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    justifyContent: 'center',
-  },
-  durationPill: {
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.full,
-    backgroundColor: colors.surface,
-  },
-  durationPillActive: {
-    backgroundColor: colors.primary,
-  },
-  durationText: {
-    color: colors.textSecondary,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  durationTextActive: {
-    color: colors.text,
-  },
-  startButton: {
-    backgroundColor: colors.primary,
-    paddingVertical: spacing.md,
-    borderRadius: radius.full,
-    alignItems: 'center',
-  },
-  stopButton: {
-    backgroundColor: colors.error,
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.xl,
-    borderRadius: radius.full,
-    alignItems: 'center',
-    alignSelf: 'stretch',
-    marginHorizontal: spacing.lg,
-  },
-  buttonText: {
-    color: colors.text,
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  taskLabel: {
-    color: colors.textSecondary,
-    fontSize: 18,
-  },
-  countdown: {
-    fontSize: 72,
-    fontWeight: '200',
-    color: colors.primary,
-    fontVariant: ['tabular-nums'],
-  },
-  completedText: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: colors.success,
-  },
-})
+	container: {
+		flex: 1,
+		justifyContent: 'center',
+		alignItems: 'center',
+		padding: 24,
+	},
+	title: { fontSize: 28, fontWeight: 'bold', marginBottom: 8 },
+	order: { fontSize: 16, color: '#888', marginBottom: 24 },
+	status: { fontSize: 20, marginBottom: 8 },
+	eta: { fontSize: 48, fontWeight: 'bold', color: '#007AFF', marginBottom: 32 },
+	button: {
+		backgroundColor: '#007AFF',
+		paddingHorizontal: 32,
+		paddingVertical: 14,
+		borderRadius: 12,
+		marginTop: 12,
+	},
+	buttonDanger: { backgroundColor: '#FF3B30' },
+	buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+});
