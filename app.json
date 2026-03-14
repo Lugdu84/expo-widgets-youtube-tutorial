@@ -9,7 +9,7 @@
 		"userInterfaceStyle": "automatic",
 		"ios": {
 			"icon": "./assets/expo.icon",
-			"bundleIdentifier": "fr.devaidaya.expo.widgets"
+			"bundleIdentifier": "fr.devaidaya.expowidgets"
 		},
 		"android": {
 			"adaptiveIcon": {
@@ -19,7 +19,7 @@
 				"monochromeImage": "./assets/images/android-icon-monochrome.png"
 			},
 			"predictiveBackGestureEnabled": false,
-			"package": "fr.devaidaya.expo.widgets"
+			"package": "fr.devaidaya.expowidgets"
 		},
 		"web": {
 			"output": "static",
@@ -35,6 +35,26 @@
 						"image": "./assets/images/splash-icon.png",
 						"imageWidth": 76
 					}
+				}
+			],
+			[
+				"expo-widgets",
+				{
+					"groupIdentifier": "group.fr.devaidaya.expowidgets",
+					"bundleIdentifier": "fr.devaidaya.expowidgets.widgets",
+					"enablePushNotifications": true,
+					"widgets": [
+						{
+							"name": "DeliveryWidget",
+							"displayName": "Ma Livraison",
+							"description": "Confirme et suis ta livraison",
+							"supportedFamilies": [
+								"systemSmall",
+								"systemMedium",
+								"systemLarge"
+							]
+						}
+					]
 				}
 			]
 		],
